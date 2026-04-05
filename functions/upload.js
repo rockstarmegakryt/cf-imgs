@@ -1,64 +1,65 @@
-export async function onRequestPost(context) {
+export async function onRequest(context) {
     const { request, env } = context;
-    const url = new URL(request.url);
-    const apikey = env.ModerateContentApiKey 
-    const ModerateContentUrl = apikey ? `https://api.moderatecontent.com/moderate/?key=${apikey}&` : ""
-    const ratingApi = env.RATINGAPI ? `${env.RATINGAPI}?` : ModerateContentUrl;
-    const clientIP = request.headers.get("x-forwarded-for") || request.headers.get("clientIP");
-    const Referer = request.headers.get('Referer') || "Referer";
-    const res_img = await fetch('https://telegra.ph/' + url.pathname + url.search, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-    });
-
-    const options = {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-    };
-    const timedata = new Date();
-    const formattedDate = new Intl.DateTimeFormat('zh-CN', options).format(timedata);
-
-    if (!env.IMG) {
-        return res_img;
-    } else {
-        // const newReq = res_img.clone();
-        const responseData = await res_img.json();
-        try {
-            const rating = ratingApi ? await getRating(ratingApi, responseData[0].src) : { rating: 0 };
-            const rating_index = rating.rating ? rating.rating : rating.rating_index
-            await insertImageData(env.IMG, responseData[0].src, Referer, clientIP, rating_index, formattedDate);
-        } catch (e) {
-            console.log(e);
-            await insertImageData(env.IMG, responseData[0].src, Referer, clientIP, 5, formattedDate);
-        }
-
-        return Response.json(responseData);
+    
+    if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
     }
-
-
-}
-
-
-async function getRating(ratingApi, src) {
-    const res = await fetch(`${ratingApi}url=https://telegra.ph${src}`);
-    // console.log(await res.json());
-    return await res.json();
-}
-
-async function insertImageData(env, src, referer, ip, rating, time) {
+    
     try {
-        const instdata = await env.prepare(
-            `INSERT INTO imginfo (url, referer, ip, rating, total, time)
-             VALUES ('${src}', '${referer}', '${ip}', ${rating}, 1, '${time}')`
-        ).run()
+        const formData = await request.formData();
+        const file = formData.get('file');
+        
+        if (!file) {
+            return new Response(JSON.stringify({ error: 'No file uploaded' }), { 
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+        
+        // Отправляем фото в Telegram
+        const tgFormData = new FormData();
+        tgFormData.append('chat_id', env.TG_CHAT_ID);
+        tgFormData.append('photo', file);
+        
+        const tgResponse = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendPhoto`, {
+            method: 'POST',
+            body: tgFormData
+        });
+        
+        const tgData = await tgResponse.json();
+        
+        if (!tgData.ok) {
+            console.error('Telegram API error:', tgData);
+            return new Response(JSON.stringify({ error: 'Telegram API error', details: tgData }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+        
+        // Получаем file_id и создаём ссылку
+        const fileId = tgData.result.photo[tgData.result.photo.length - 1].file_id;
+        
+        // Получаем путь к файлу
+        const fileResponse = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${fileId}`);
+        const fileData = await fileResponse.json();
+        
+        const filePath = fileData.result.file_path;
+        const imageUrl = `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${filePath}`;
+        
+        return new Response(JSON.stringify({
+            success: true,
+            url: imageUrl,
+            fileId: fileId
+        }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
     } catch (error) {
-
-    };
+        console.error('Upload error:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
 }
